@@ -112,6 +112,7 @@ def call_llm_api(xml_code: str, file_name: str, api_url: str = "http://10.160.19
         ],
         "stream": True,
         "temperature": 0.0,
+        "max_tokens": 8192,
         "extra_body": {"top_k": 1}
     }
 
@@ -145,7 +146,7 @@ def call_llm_api(xml_code: str, file_name: str, api_url: str = "http://10.160.19
                 return result
             else:
                 print(f"无法解析API响应为JSON格式，文件: {file_name}")
-                print(f"响应内容: {full_response[:500]}...")  # 只打印前500个字符
+                print(f"响应内容: {full_response}...")  # 只打印前500个字符
                 if attempt < max_retries:
                     print(f"第{attempt + 1}次尝试失败，准备重试...")
                     time.sleep(2)  # 重试前等待2秒
