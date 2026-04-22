@@ -184,7 +184,7 @@ def find_all_xosc_files(base_path: str) -> List[str]:
 
 def main():
     # 设置XOSC文件基础路径
-    xosc_base_path = "/C20545/jeremyj/pro/volkswagen_intention_eval/data/02_CIDAS场景/CIDAS场景_xosc_matched"
+    xosc_base_path = "/C20545/jeremyj/pro/volkswagen_intention_eval/data/CQU/CQU_xml"
     
     if not os.path.exists(xosc_base_path):
         print(f"错误: XOSC文件目录不存在 - {xosc_base_path}")
