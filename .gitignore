@@ -1,2 +1,4 @@
 data
-batch_evaluation_results.json
+batch*results.json
+__pycache__
+cqu*results.json
