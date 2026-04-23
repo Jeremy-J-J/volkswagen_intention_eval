@@ -5,7 +5,7 @@ from pathlib import Path
 plt.rcParams['font.sans-serif'] = ['WenQuanYi Micro Hei', 'SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
-json_path = Path(__file__).parent / "data/01_法规测试场景/batch_evaluation_results.json"
+json_path = Path(__file__).parent / "data/02_CIDAS场景/batch_evaluation_results.json"
 
 with open(json_path, 'r', encoding='utf-8') as f:
     data = json.load(f)
