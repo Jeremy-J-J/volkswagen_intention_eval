@@ -21,6 +21,79 @@ def load_json_file(file_path: str) -> Dict[str, Any]:
         return json.load(f)
 
 
+def call_llm_judgment_with_reason(content1: str, content2: str,
+                                   api_url: str = "http://10.160.199.227:8006/v1/chat/completions") -> tuple:
+    """
+    调用大模型API判断两个内容是否表达相同意思，并返回判断理由
+
+    Args:
+        content1: 第一个内容
+        content2: 第二个内容
+        api_url: API服务地址
+
+    Returns:
+        tuple: (is_match: bool, reason: str)
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer EMPTY"
+    }
+
+    system_prompt = """请严格判断以下两个内容是否表达相同的意思。
+要求：
+1. 仅当下列条件满足时才判断为"一致"：两个内容表达的含义完全相同或高度相似
+2. 当两个内容表达不同的概念、数值或类别时，必须判断为"不一致"
+3. 特别注意：不同类型的概念（如"隧道"和"城市快速路"）应判断为"不一致"
+4. 请用JSON格式输出判断结果，包含判断结论和不一致的原因说明"""
+
+    user_content = f"""请判断以下两个内容是否表达相同的意思：
+
+内容1: {content1}
+
+内容2: {content2}
+
+请以JSON格式输出判断结果：
+{{"结论": "一致"或"不一致", "原因": "简要说明不一致的原因（如果一致则为空）"}}
+
+请仅输出JSON，不要有其他解释文字。"""
+
+    payload = {
+        "model": "holo-model",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ],
+        "temperature": 0.0
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        if "choices" in result and len(result["choices"]) > 0:
+            content = result["choices"][0]["message"]["content"]
+            # 解析JSON响应
+            try:
+                # 尝试提取JSON
+                import re
+                json_match = re.search(r'\{[^}]+\}', content)
+                if json_match:
+                    json_str = json_match.group()
+                    data = json.loads(json_str)
+                    is_match = data.get("结论", "") == "一致"
+                    reason = data.get("原因", "")
+                    return is_match, reason
+            except json.JSONDecodeError:
+                pass
+            # 如果解析失败，使用简单的判断
+            is_match = "是" in content.strip() and "否" not in content.strip()
+            return is_match, ""
+        return False, ""
+    except Exception as e:
+        print(f"请求错误: {e}")
+        return False, str(e)
+
+
 def call_llm_judgment(content1: str, content2: str,
                      api_url: str = "http://10.160.199.227:8006/v1/chat/completions") -> bool:
     """
@@ -34,59 +107,8 @@ def call_llm_judgment(content1: str, content2: str,
     Returns:
         判断结果，True表示一致，False表示不一致
     """
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer EMPTY"
-    }
-
-    system_prompt = """请严格判断以下两个内容是否表达相同的意思。
-要求：
-1. 仅当下列条件满足时才输出"是"：两个内容表达的含义完全相同或高度相似
-2. 当两个内容表达不同的概念、数值或类别时，必须输出"否"
-3. 特别注意：不同类型的概念（如"隧道"和"城市快速路"）应判断为"否"
-4. 输出仅包含"是"或"否"，不要有其他解释文字。"""
-
-    user_content = f"""请判断以下两个内容是否表达相同的意思：
-内容1: {content1}
-内容2: {content2}
-
-请仅输出"是"或"否"："""
-
-    payload = {
-        "model": "holo-model",
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": user_content
-            }
-        ],
-        "temperature": 0.0
-    }
-
-    try:
-        response = requests.post(api_url, headers=headers, json=payload)
-        response.raise_for_status()
-
-        result = response.json()
-        # 提取大模型的判断结果
-        if "choices" in result and len(result["choices"]) > 0:
-            content = result["choices"][0]["message"]["content"]
-            # 判断是否包含"是"字
-            return "是" in content.strip() and "否" not in content.strip()
-        else:
-            print(f"API返回格式不正确: {result}")
-            return False
-
-    except requests.exceptions.RequestException as e:
-        print(f"请求错误: {e}")
-        return False
-    except Exception as e:
-        print(f"解析API响应错误: {e}")
-        return False
+    is_match, _ = call_llm_judgment_with_reason(content1, content2, api_url)
+    return is_match
 
 
 def normalize_content(content: Any) -> str:
@@ -107,9 +129,183 @@ def normalize_content(content: Any) -> str:
         return str(content)
 
 
+def merge_action_sequences(layer3_data: Dict, layer4_data: Dict) -> List[Dict]:
+    """
+    将第四层的动作序列合并到第三层参与者信息中
+
+    Args:
+        layer3_data: 第三层参与者信息层数据（列表）
+        layer4_data: 第四层行为语义层数据（字典）
+
+    Returns:
+        合并后的参与者列表，每个参与者包含其动作序列（如果有）
+    """
+    merged_participants = []
+
+    # 复制参与者信息
+    for p in layer3_data:
+        participant = dict(p)
+        participant["动作序列"] = None  # 初始化为空
+        merged_participants.append(participant)
+
+    # 处理主车动作序列：找到参与者角色="主车"的项
+    if "主车动作序列" in layer4_data:
+        ego_action = layer4_data["主车动作序列"].get("内容")
+        for p in merged_participants:
+            if p.get("参与者角色") == "主车":
+                p["动作序列"] = ego_action
+                break
+
+    # 处理他车他者动作序列：根据参与者ID匹配
+    if "他车他者动作序列" in layer4_data:
+        npc_actions = layer4_data["他车他者动作序列"].get("内容", [])
+        if isinstance(npc_actions, list):
+            for action_item in npc_actions:
+                if isinstance(action_item, dict) and "参与者ID" in action_item:
+                    participant_id = action_item["参与者ID"]
+                    action_sequence = action_item.get("动作序列")
+                    # 找到对应的参与者
+                    for p in merged_participants:
+                        if p.get("参与者ID") == participant_id:
+                            p["动作序列"] = action_sequence
+                            break
+
+    return merged_participants
+
+
+def extract_participants_for_matching(xml_layer3, xml_layer4, osc_layer3, osc_layer4):
+    """
+    提取并合并参与者信息，用于匹配计分
+
+    Args:
+        xml_layer3: XML第三层数据
+        xml_layer4: XML第四层数据
+        osc_layer3: OSC第三层数据
+        osc_layer4: OSC第四层数据
+
+    Returns:
+        (xml_participants, osc_participants): 合并后的参与者列表
+    """
+    xml_participants = merge_action_sequences(xml_layer3, xml_layer4)
+    osc_participants = merge_action_sequences(osc_layer3, osc_layer4)
+    return xml_participants, osc_participants
+
+
+def judge_same_participant(xml_p: Dict, osc_p: Dict,
+                          api_url: str = "http://10.160.199.227:8006/v1/chat/completions") -> bool:
+    """
+    使用LLM判断两个参与者是否描述同一个实体（忽略ID，速度/距离可放宽）
+
+    Args:
+        xml_p: XML参与者信息
+        osc_p: OSC参与者信息
+        api_url: API服务地址
+
+    Returns:
+        True表示描述同一个参与者，False表示不是
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer EMPTY"
+    }
+
+    # 构建比较内容（忽略参与者ID）
+    def get_comparable_info(p):
+        return {
+            "参与者角色": p.get("参与者角色"),
+            "参与者类型": p.get("参与者类型"),
+            "相对主车方位": p.get("相对主车方位"),
+            "车道关系": p.get("车道关系"),
+            "初始速度_kmh": p.get("初始速度_kmh"),
+            "相对主车距离_m": p.get("相对主车距离_m")
+        }
+
+    xml_info = get_comparable_info(xml_p)
+    osc_info = get_comparable_info(osc_p)
+
+    system_prompt = """请判断以下两个参与者信息是否描述的是同一个实体。
+判断标准：
+1. 参与者角色必须相同（如都是"主车"或都是"NPC车辆"）
+2. 参与者类型应该相同（如都是"轿车"或都是"卡车"）
+3. 相对位置（方位、车道关系）应该一致
+4. 速度值和距离值可以有较大误差，不是主要判断依据
+5. 参与者ID不参与判断（不同系统的命名方式可能不同）
+
+请仅输出"是"或"否"："""
+
+    user_content = f"""参与者1: {json.dumps(xml_info, ensure_ascii=False)}
+参与者2: {json.dumps(osc_info, ensure_ascii=False)}
+
+请判断这两个参与者是否描述的是同一个实体："""
+
+    payload = {
+        "model": "holo-model",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ],
+        "temperature": 0.0
+    }
+
+    try:
+        response = requests.post(api_url, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+        if "choices" in result and len(result["choices"]) > 0:
+            content = result["choices"][0]["message"]["content"]
+            return "是" in content.strip() and "否" not in content.strip()
+        return False
+    except Exception as e:
+        print(f"判断参与者是否相同时出错: {e}")
+        return False
+
+
+def match_participants_by_similarity(xml_participants: List[Dict], osc_participants: List[Dict]) -> tuple:
+    """
+    使用贪心算法匹配XML和OSC的参与者
+
+    Args:
+        xml_participants: XML参与者列表
+        osc_participants: OSC参与者列表
+
+    Returns:
+        (matched_pairs, unmatched_xml_count, unmatched_osc_count)
+        - matched_pairs: [(xml_p, osc_p, is_same_participant, is_content_match), ...]
+        - unmatched_xml_count: XML中未匹配上的参与者数量
+        - unmatched_osc_count: OSC中未匹配上的参与者数量
+    """
+    matched_pairs = []
+    used_xml = set()
+    used_osc = set()
+
+    # 计算所有可能配对的相似度
+    candidates = []
+    for i, xml_p in enumerate(xml_participants):
+        for j, osc_p in enumerate(osc_participants):
+            is_same = judge_same_participant(xml_p, osc_p)
+            if is_same:
+                candidates.append((i, j, xml_p, osc_p))
+
+    # 按相似度排序（这里简化为按索引顺序，实际上judge_same_participant返回的是bool）
+    # 贪心选取：每次选最确定的匹配
+    for i, j, xml_p, osc_p in candidates:
+        if i not in used_xml and j not in used_osc:
+            matched_pairs.append((xml_p, osc_p))
+            used_xml.add(i)
+            used_osc.add(j)
+
+    unmatched_xml = len(xml_participants) - len(matched_pairs)
+    unmatched_osc = len(osc_participants) - len(matched_pairs)
+
+    return matched_pairs, unmatched_xml, unmatched_osc
+
+
 def calculate_score_with_log(xml_file_path: str, osc_file_path: str) -> tuple[float, List[str]]:
     """
     计算XML和OSC意图分析结果的匹配得分，并记录详细过程日志
+
+    第三层（参与者信息层）：使用参与者整体匹配（动作序列已合并到参与者中）
+    其他层：第一、二、四、五层保持逐项匹配逻辑
 
     Args:
         xml_file_path: XML意图分析结果文件路径
@@ -143,7 +339,56 @@ def calculate_score_with_log(xml_file_path: str, osc_file_path: str) -> tuple[fl
             xml_layer = layer_content
             osc_layer = osc_data[layer_name]
 
-            # 如果是列表类型的层级（如参与者信息层）
+            # 第三层（参与者信息层）：使用参与者整体匹配逻辑
+            if layer_name == "参与者信息层":
+                # 提取第四层的行为语义数据（用于合并动作序列）
+                xml_layer4 = xml_data.get("行为语义层", {})
+                osc_layer4 = osc_data.get("行为语义层", {})
+
+                # 提取并合并参与者信息
+                xml_participants, osc_participants = extract_participants_for_matching(
+                    xml_layer, xml_layer4, osc_layer, osc_layer4
+                )
+
+                print(f"第三层参与者匹配: XML有{len(xml_participants)}个参与者, OSC有{len(osc_participants)}个参与者")
+
+                # 使用贪心算法匹配参与者
+                matched_pairs, unmatched_xml, unmatched_osc = match_participants_by_similarity(
+                    xml_participants, osc_participants
+                )
+
+                print(f"成功匹配的对数: {len(matched_pairs)}, XML未匹配: {unmatched_xml}, OSC未匹配: {unmatched_osc}")
+
+                # 对每个匹配对进行整体内容判断
+                for xml_p, osc_p in matched_pairs:
+                    xml_id = xml_p.get("参与者ID", "未知")
+                    osc_id = osc_p.get("参与者ID", "未知")
+                    total_valid_entries += 1
+
+                    xml_content = normalize_content(xml_p)
+                    osc_content = normalize_content(osc_p)
+
+                    if xml_content == osc_content:
+                        positive_matches += 1
+                        print(f"参与者完全匹配: XML[{xml_id}] vs OSC[{osc_id}]")
+                    else:
+                        print(f"请求大模型判断参与者: XML[{xml_id}] vs OSC[{osc_id}]")
+                        is_match, reason = call_llm_judgment_with_reason(xml_content, osc_content)
+                        if is_match:
+                            positive_matches += 1
+                            print(f"大模型判断一致: XML[{xml_id}] vs OSC[{osc_id}]")
+                        else:
+                            reason_text = f" (原因: {reason})" if reason else ""
+                            print(f"大模型判断不一致: XML[{xml_id}] vs OSC[{osc_id}]{reason_text}")
+
+                # 未匹配上的参与者计为不匹配
+                for _ in range(unmatched_xml + unmatched_osc):
+                    total_valid_entries += 1
+                    # 不匹配不得分，所以positive_matches不增加
+
+                continue  # 第三层处理完成，跳过下面的通用逻辑
+
+            # 其他层：保持原来的逐项匹配逻辑
             if isinstance(xml_layer, list):
                 # 按索引进行比较
                 min_len = min(len(xml_layer), len(osc_layer))
@@ -176,21 +421,26 @@ def calculate_score_with_log(xml_file_path: str, osc_file_path: str) -> tuple[fl
                         # 情况一: 内容完全一致
                         if xml_content == osc_content:
                             positive_matches += 1
-                            print(f"完全匹配: {key} - {xml_content}")
+                            print(f"完全匹配: {layer_name}/{key} - {xml_content}")
                         else:
                             # 情况二: 请求大模型判断一致性
-                            judgment_request_msg = f"请求大模型判断: {key}, XML: {xml_content}, OSC: {osc_content}"
+                            judgment_request_msg = f"请求大模型判断: {layer_name}/{key}, XML: {xml_content}, OSC: {osc_content}"
                             print(judgment_request_msg)
                             if call_llm_judgment(xml_content, osc_content):
                                 positive_matches += 1
-                                print(f"大模型判断一致: {key}")
+                                print(f"大模型判断一致: {layer_name}/{key}")
                             else:
-                                print(f"大模型判断不一致: {key}")
+                                print(f"大模型判断不一致: {layer_name}/{key}")
             else:
                 # 如果是字典类型的层级
                 for key in xml_layer:
                     if key not in osc_layer:
                         continue  # OSC中没有这个键，跳过
+
+                    # 跳过第四层的主车动作序列和他车他者动作序列（已合并到第三层）
+                    if layer_name == "行为语义层" and key in ("主车动作序列", "他车他者动作序列"):
+                        print(f"跳过{key}: 已合并到第三层参与者信息中")
+                        continue
 
                     xml_entry = xml_layer[key]
                     osc_entry = osc_layer[key]
@@ -200,7 +450,7 @@ def calculate_score_with_log(xml_file_path: str, osc_file_path: str) -> tuple[fl
 
                     # 规则1: 如果有一方为"未涉及"，则跳过该条
                     if xml_info_type == "未涉及" or osc_info_type == "未涉及":
-                        print(f"跳过未涉及项: {key}")
+                        print(f"跳过未涉及项: {layer_name}/{key}")
                         continue
 
                     # 进入正式计分
@@ -212,16 +462,16 @@ def calculate_score_with_log(xml_file_path: str, osc_file_path: str) -> tuple[fl
                     # 情况一: 内容完全一致
                     if xml_content == osc_content:
                         positive_matches += 1
-                        print(f"完全匹配: {key} - {xml_content}")
+                        print(f"完全匹配: {layer_name}/{key} - {xml_content}")
                     else:
                         # 情况二: 请求大模型判断一致性
-                        judgment_request_msg = f"请求大模型判断: {key}, XML: {xml_content}, OSC: {osc_content}"
+                        judgment_request_msg = f"请求大模型判断: {layer_name}/{key}, XML: {xml_content}, OSC: {osc_content}"
                         print(judgment_request_msg)
                         if call_llm_judgment(xml_content, osc_content):
                             positive_matches += 1
-                            print(f"大模型判断一致: {key}")
+                            print(f"大模型判断一致: {layer_name}/{key}")
                         else:
-                            print(f"大模型判断不一致: {key}")
+                            print(f"大模型判断不一致: {layer_name}/{key}")
 
         # 计算最终得分
         if total_valid_entries == 0:
@@ -247,21 +497,49 @@ def calculate_score_with_log(xml_file_path: str, osc_file_path: str) -> tuple[fl
                 i += 1
                 continue
 
-            # 如果是"请求大模型判断"的日志，尝试与下一行合并
+            # 情况一：请求大模型判断（标准格式）
             if line.startswith("请求大模型判断:") and i + 1 < len(log_lines):
                 next_line = log_lines[i + 1].strip()
                 if next_line.startswith("大模型判断一致:") or next_line.startswith("大模型判断不一致:"):
-                    # 合并这两行
-                    merged_line = f"{line} | {next_line}"
+                    result = next_line.replace("大模型判断一致:", "→一致").replace("大模型判断不一致:", "→不一致")
+                    merged_line = f"{line} | {result}"
                     merged_logs.append(merged_line)
-                    i += 2  # 跳过这两行
+                    i += 2
+                    continue
+
+            # 情况二：参与者匹配判断
+            if line.startswith("请求大模型判断参与者:") and i + 1 < len(log_lines):
+                next_line = log_lines[i + 1].strip()
+                if next_line.startswith("大模型判断一致:") or next_line.startswith("大模型判断不一致:"):
+                    result = next_line.replace("大模型判断一致:", "→一致").replace("大模型判断不一致:", "→不一致")
+                    merged_line = f"{line} | {result}"
+                    merged_logs.append(merged_line)
+                    i += 2
                     continue
 
             # 添加当前行
             merged_logs.append(line)
             i += 1
 
-        return score, merged_logs
+        # 在第三层参与者匹配的日志前后添加分隔
+        final_logs = []
+        in_layer3_section = False
+        layer3_started = False
+        for line in merged_logs:
+            if "第三层参与者匹配:" in line:
+                if final_logs and final_logs[-1] != "":
+                    final_logs.append("")  # 上面空一行
+                layer3_started = True
+                in_layer3_section = True
+                final_logs.append(line)
+            elif in_layer3_section and line.startswith("跳过主车动作序列"):
+                final_logs.append("")  # 下面空一行
+                final_logs.append(line)
+                in_layer3_section = False
+            else:
+                final_logs.append(line)
+
+        return score, final_logs
     finally:
         # 恢复原来的stdout
         sys.stdout = old_stdout
