@@ -225,9 +225,9 @@ def judge_same_participant(xml_p: Dict, osc_p: Dict,
 
     system_prompt = """请判断以下两个参与者信息是否描述的是同一个实体。
 判断标准：
-1. 参与者角色必须相同（如都是"主车"或都是"NPC车辆"）
-2. 参与者类型应该相同（如都是"轿车"或都是"卡车"）
-3. 相对位置（方位、车道关系）应该一致
+1. 参与者角色只是参考，不要求完全相同（如"主车"vs"主车"必须相同，但"静态障碍物"和"NPC车辆"都可能是车辆）
+2. 参与者类型是最重要的判断依据，必须相同（如都是"轿车"或都是"卡车"）
+3. 相对位置（方位、车道关系）相似即可，不要求完全一致
 4. 速度值和距离值可以有较大误差，不是主要判断依据
 5. 参与者ID不参与判断（不同系统的命名方式可能不同）
 
@@ -248,7 +248,7 @@ def judge_same_participant(xml_p: Dict, osc_p: Dict,
     }
 
     try:
-        response = requests.post(api_url, headers=headers, json=payload)
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
         response.raise_for_status()
         result = response.json()
         if "choices" in result and len(result["choices"]) > 0:
@@ -264,6 +264,9 @@ def match_participants_by_similarity(xml_participants: List[Dict], osc_participa
     """
     使用贪心算法匹配XML和OSC的参与者
 
+    策略：1. 先把主车配对（参与者角色都是"主车"的肯定配对）
+          2. 其他参与者使用LLM判断
+
     Args:
         xml_participants: XML参与者列表
         osc_participants: OSC参与者列表
@@ -278,15 +281,28 @@ def match_participants_by_similarity(xml_participants: List[Dict], osc_participa
     used_xml = set()
     used_osc = set()
 
-    # 计算所有可能配对的相似度
+    # Step 1: 先配对主车（参与者角色都是"主车"的肯定配对）
+    for i, xml_p in enumerate(xml_participants):
+        if xml_p.get("参与者角色") == "主车":
+            for j, osc_p in enumerate(osc_participants):
+                if osc_p.get("参与者角色") == "主车" and j not in used_osc:
+                    matched_pairs.append((xml_p, osc_p))
+                    used_xml.add(i)
+                    used_osc.add(j)
+                    break
+
+    # Step 2: 对其他参与者使用LLM判断进行匹配
     candidates = []
     for i, xml_p in enumerate(xml_participants):
+        if i in used_xml:
+            continue
         for j, osc_p in enumerate(osc_participants):
+            if j in used_osc:
+                continue
             is_same = judge_same_participant(xml_p, osc_p)
             if is_same:
                 candidates.append((i, j, xml_p, osc_p))
 
-    # 按相似度排序（这里简化为按索引顺序，实际上judge_same_participant返回的是bool）
     # 贪心选取：每次选最确定的匹配
     for i, j, xml_p, osc_p in candidates:
         if i not in used_xml and j not in used_osc:
