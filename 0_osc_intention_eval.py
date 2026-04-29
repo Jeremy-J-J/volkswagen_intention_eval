@@ -134,7 +134,8 @@ def find_all_osc_files(base_path: str) -> List[str]:
 def main():
     # 设置OSC文件基础路径
     # osc_base_path = "/C20545/jeremyj/pro/volkswagen_intention_eval/data/01_法规测试场景/法规测试_osc"
-    osc_base_path = "/C20545/jeremyj/pro/volkswagen_intention_eval/data/CQU/v1.7.0/osc_output"
+    osc_base_path = "/C20545/jeremyj/pro/volkswagen_intention_eval/data/02_CIDAS场景/CIDAS-osc-0416"
+    # osc_base_path = "/C20545/jeremyj/pro/volkswagen_intention_eval/data/CQU/v1.7.0/osc_output"
     
     if not os.path.exists(osc_base_path):
         print(f"错误: OSC文件目录不存在 - {osc_base_path}")
